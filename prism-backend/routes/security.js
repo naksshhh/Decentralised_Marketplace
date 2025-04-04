@@ -128,26 +128,98 @@ router.post('/decrypt', auth, upload.single('file'), async (req, res) => {
             return res.status(400).json({ message: 'No file uploaded' });
         }
 
-        const { privateKey } = req.body;
-        if (!privateKey) {
-            return res.status(400).json({ message: 'Private key is required' });
+        const { signature, message, address } = req.body;
+        if (!signature || !message || !address) {
+            return res.status(400).json({ message: 'Signature, message, and address are required' });
         }
 
-        const outputFile = `uploads/decrypted_${Date.now()}.txt`;
-        const result = await reEncryptionService.processFile(
-            req.file.path,
-            outputFile,
-            'decrypt',
-            { privateKey }
-        );
+        // Verify the signature
+        const { ethers } = require('ethers');
+        const recoveredAddress = ethers.verifyMessage(message, signature);
+        
+        if (recoveredAddress.toLowerCase() !== address.toLowerCase()) {
+            return res.status(401).json({ message: 'Invalid signature' });
+        }
 
-        res.json({
-            message: 'File decrypted successfully',
-            outputFile
-        });
+        // Check if the user has access to the dataset
+        const { contract } = require('../config/web3');
+        const datasetId = message.match(/dataset (\d+)/)?.[1];
+        
+        if (datasetId) {
+            const hasAccess = await contract.hasAccess(datasetId, address);
+            if (!hasAccess) {
+                return res.status(403).json({ message: 'You do not have access to this dataset' });
+            }
+        }
+
+        // Read the encrypted data from the file
+        const fs = require('fs');
+        const fileContent = fs.readFileSync(req.file.path, 'utf8');
+        
+        // Debug logging
+        console.log('Received file content:', fileContent);
+        
+        // Parse the encrypted data
+        let encryptedData;
+        try {
+            encryptedData = JSON.parse(fileContent);
+            console.log('Parsed encrypted data:', encryptedData);
+            
+            if (!encryptedData.key || !encryptedData.cipher) {
+                console.log('Missing required fields:', {
+                    hasKey: !!encryptedData.key,
+                    hasCipher: !!encryptedData.cipher,
+                    data: encryptedData
+                });
+                throw new Error('Invalid encrypted data format');
+            }
+        } catch (error) {
+            console.error('Error parsing encrypted data:', error);
+            return res.status(400).json({ message: 'Invalid encrypted data format' });
+        }
+
+        // Create a temporary file with the encrypted data
+        const tempFile = `uploads/temp_${Date.now()}.json`;
+        fs.writeFileSync(tempFile, JSON.stringify(encryptedData));
+
+        try {
+            // Convert the signature to a valid private key format
+            // Remove the '0x' prefix if present and take the first 64 characters
+            const privateKey = signature.startsWith('0x') 
+                ? signature.slice(2, 66) 
+                : signature.slice(0, 64);
+
+            // Pad with zeros if needed
+            const paddedPrivateKey = privateKey.padEnd(64, '0');
+
+            // Decrypt the data
+            const outputFile = `uploads/decrypted_${Date.now()}.txt`;
+            const decryptedData = await reEncryptionService.processFile(
+                tempFile,
+                outputFile,
+                'decrypt',
+                { privateKey: paddedPrivateKey }
+            );
+
+            // Clean up temporary files
+            fs.unlinkSync(req.file.path);
+            fs.unlinkSync(tempFile);
+            fs.unlinkSync(outputFile);
+
+            res.json({
+                message: 'File decrypted successfully',
+                decryptedData
+            });
+        } catch (error) {
+            // Clean up temporary files in case of error
+            if (fs.existsSync(tempFile)) {
+                fs.unlinkSync(tempFile);
+            }
+            throw error;
+        }
     } catch (error) {
         console.error('Decryption error:', error);
-        res.status(500).json({ message: 'Error decrypting file' });
+        res.status(500).json({ message: 'Error decrypting file: ' + error.message });
     }
 });
 

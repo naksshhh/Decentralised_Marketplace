@@ -99,7 +99,14 @@ class ReEncryptionService {
 
     async processFile(inputFile, outputFile, operation, keys) {
         const fs = require('fs');
-        const data = fs.readFileSync(inputFile, 'utf8');
+        const fileContent = fs.readFileSync(inputFile, 'utf8');
+        
+        let data;
+        try {
+            data = JSON.parse(fileContent);
+        } catch (error) {
+            throw new Error('Invalid data format: ' + error.message);
+        }
         
         let result;
         switch(operation) {
@@ -107,16 +114,22 @@ class ReEncryptionService {
                 result = this.encryptData(keys.publicKey, data);
                 break;
             case 'decrypt':
+                if (!data.key || !data.cipher) {
+                    throw new Error('Invalid encrypted data format: missing key or cipher');
+                }
                 result = this.decryptData(keys.privateKey, data);
                 break;
             case 'reEncrypt':
+                if (!data.key) {
+                    throw new Error('Invalid data format: missing key');
+                }
                 result = this.reEncrypt(keys.reEncryptionKey, data);
                 break;
             default:
                 throw new Error('Invalid operation');
         }
 
-        fs.writeFileSync(outputFile, JSON.stringify(result));
+        fs.writeFileSync(outputFile, result);
         return result;
     }
 }

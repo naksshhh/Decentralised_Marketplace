@@ -14,16 +14,6 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
-
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!require('fs').existsSync(uploadsDir)) {
-    require('fs').mkdirSync(uploadsDir);
-}
-
-connectDB();
-
 // Add health check route
 app.get("/api/health", (req, res) => {
   res.json({ 
@@ -33,10 +23,25 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// Connect to MongoDB
+connectDB();
+
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Log all requests
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  next();
+});
+
 // Routes
 app.use("/api/auth", require("./routes/Auth"));
 app.use("/api/datasets", require("./routes/datasets"));
 app.use("/api/security", require("./routes/security"));
+app.use("/api/transactions", require("./routes/transactions"));
+app.use("/api/user", require("./routes/user"));
 
 // Add error handling middleware - must be after routes
 app.use((err, req, res, next) => {
@@ -48,5 +53,8 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Start server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});

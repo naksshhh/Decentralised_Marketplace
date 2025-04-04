@@ -1,11 +1,20 @@
 const { ethers } = require("ethers");
 require("dotenv").config();
 
+console.log('\n=== Initializing Web3 Configuration ===');
+console.log('Environment variables loaded:', {
+  ALCHEMY_API_URL: process.env.ALCHEMY_API_URL ? 'Set' : 'Not Set',
+  PRIVATE_KEY: process.env.PRIVATE_KEY ? 'Set' : 'Not Set',
+  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS ? 'Set' : 'Not Set'
+});
+
 // Create provider
 const provider = new ethers.JsonRpcProvider(process.env.ALCHEMY_API_URL);
+console.log('Provider created successfully');
 
 // Create wallet
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY || "0x0000000000000000000000000000000000000000000000000000000000000001", provider);
+console.log('Wallet created successfully');
 
 // Contract ABI (interface)
 const contractABI = [
@@ -56,13 +65,6 @@ const contractABI = [
     "type": "function"
   },
   {
-    "inputs": [],
-    "name": "datasetCounter",
-    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
     "inputs": [{ "internalType": "uint256", "name": "_datasetId", "type": "uint256" }],
     "name": "getDataset",
     "outputs": [
@@ -76,6 +78,22 @@ const contractABI = [
     ],
     "stateMutability": "view",
     "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "datasetCounter",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "uint256", "name": "datasetId", "type": "uint256" },
+      { "indexed": true, "internalType": "address", "name": "buyer", "type": "address" }
+    ],
+    "name": "DatasetPurchased",
+    "type": "event"
   },
   {
     "inputs": [
@@ -96,95 +114,72 @@ const contractABI = [
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "uint256", "name": "datasetId", "type": "uint256" },
+      { "indexed": true, "internalType": "address", "name": "owner", "type": "address" },
+      { "indexed": false, "internalType": "string", "name": "ipfsHash", "type": "string" },
+      { "indexed": false, "internalType": "uint256", "name": "price", "type": "uint256" },
+      { "indexed": false, "internalType": "string", "name": "metadata", "type": "string" },
+      { "indexed": false, "internalType": "uint256", "name": "timestamp", "type": "uint256" }
+    ],
+    "name": "DatasetUploaded",
+    "type": "event"
   }
 ];
 
-// Create contract with error handling
-let contract;
+// Create contract instance
+console.log('\n=== Creating Contract Instance ===');
+console.log('Contract address:', process.env.CONTRACT_ADDRESS);
+console.log('Contract ABI length:', contractABI.length);
+const contract = new ethers.Contract(
+  process.env.CONTRACT_ADDRESS,
+  contractABI,
+  wallet
+);
+console.log('Contract instance created successfully');
+console.log('Contract address:', contract.target);
+console.log('Contract interface:', contract.interface.format());
+
+// Test address validation
+const testAddress = "0xf8b171176f007bc5062c990bcf9280fe968f0796";
+console.log('\n=== Testing Address Validation ===');
+console.log('Test address:', testAddress);
 try {
-  if (!process.env.CONTRACT_ADDRESS) {
-    console.warn("WARNING: CONTRACT_ADDRESS not set in .env file");
-    // Use a dummy address to prevent crashes
-    contract = new ethers.Contract("0x0000000000000000000000000000000000000000", contractABI, wallet);
-  } else {
-    contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, contractABI, wallet);
-    console.log("Contract created successfully at address:", process.env.CONTRACT_ADDRESS);
-    
-    // Test that contract interface is properly configured
-    try {
-      // Check if the contract interface has the expected functions
-      const hasGetDataset = contract.interface.hasFunction("getDataset(uint256)");
-      const hasDatasetCounter = contract.interface.hasFunction("datasetCounter()");
-      const hasPurchaseDataset = contract.interface.hasFunction("purchaseDataset(uint256)");
-      
-      console.log("Contract interface verified:", {
-        hasGetDataset,
-        hasDatasetCounter,
-        hasPurchaseDataset
-      });
-      
-      // Update contract interface if needed for compatibility
-      if (!hasGetDataset || !hasDatasetCounter || !hasPurchaseDataset) {
-        console.warn("Some functions are missing from contract interface, using simplified interface");
-        
-        // Create a simplified interface as fallback
-        const simplifiedABI = [
-          "function uploadDataset(string _ipfsHash, uint256 _price, string _metadata)",
-          "function purchaseDataset(uint256 _datasetId) payable",
-          "function hasAccess(uint256 _datasetId, address _user) view returns (bool)",
-          "function datasetCounter() view returns (uint256)",
-          "function getDataset(uint256 _datasetId) view returns (address owner, string ipfsHash, uint256 price, bool isAvailable, string metadata, uint256 timestamp, uint256 accessCount)"
-        ];
-        
-        // Recreate the contract with the simplified interface
-        contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, simplifiedABI, wallet);
-        console.log("Contract recreated with simplified interface");
-      }
-    } catch (interfaceError) {
-      console.error("Error verifying contract interface:", interfaceError);
-    }
-  }
+  const checksummed = ethers.getAddress(testAddress);
+  console.log('Address validation successful:', checksummed);
 } catch (error) {
-  console.error("Error creating contract instance:", error);
-  // Create a minimal contract to prevent crashes
-  contract = {
-    target: process.env.CONTRACT_ADDRESS || "0x0000000000000000000000000000000000000000",
-    interface: new ethers.Interface(contractABI)
-  };
+  console.log('Address validation failed:', error.message);
 }
 
-// Export a helper function to safely decode contract results
+// Test event filters
+console.log('\n=== Testing Event Filters ===');
+try {
+  const purchaseFilter = contract.filters.DatasetPurchased(null, testAddress);
+  console.log('Purchase filter created successfully:', purchaseFilter);
+  const uploadFilter = contract.filters.DatasetUploaded(testAddress);
+  console.log('Upload filter created successfully:', uploadFilter);
+} catch (error) {
+  console.error('Error creating event filters:', error);
+}
+
+// Helper function to safely decode contract call results
 const safeDecodeResult = (functionName, result) => {
   try {
-    // Try standard decode
     return contract.interface.decodeFunctionResult(functionName, result);
   } catch (error) {
-    console.error(`Error decoding ${functionName} result:`, error.message);
-    
-    // For testing only: Return hardcoded values
-    if (functionName === "getDataset") {
-      // Mock dataset values for testing
-      return [
-        "0xf8b171176f007bc5062c990bcf9280fe968f0796", // owner
-        "QmTestHash", // ipfsHash
-        ethers.parseEther("0.01"), // price
-        true, // isAvailable
-        "Sample test dataset", // metadata
-        Math.floor(Date.now() / 1000), // timestamp
-        0 // accessCount
-      ];
-    }
-    
-    if (functionName === "datasetCounter") {
-      return [5]; // Return a mock dataset count
-    }
-    
-    if (functionName === "hasAccess") {
-      return [false]; // Default to no access
-    }
-    
-    throw error; // Re-throw for other functions
+    console.error(`Error decoding ${functionName} result:`, error);
+    return null;
   }
 };
 
-module.exports = { provider, wallet, contract, contractABI, safeDecodeResult };
+module.exports = {
+  provider,
+  wallet,
+  contract,
+  contractABI,
+  safeDecodeResult,
+  ethers
+};

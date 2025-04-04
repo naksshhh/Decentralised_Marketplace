@@ -10,25 +10,43 @@ const multer = require("multer");
 const fileService = require("../services/fileService");
 const path = require("path");
 const fs = require("fs");
+const Purchase = require('../models/Purchase');
+const auth = require('../middleware/auth');
+const reEncryptionService = require('../services/security/reEncryptionService');
 
 // Setup multer for file uploads
 const storage = multer.memoryStorage();
 const upload = multer({ 
   storage: storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // Limit upload size to 10MB
+    fileSize: 50 * 1024 * 1024, // Increased limit to 50MB
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
-      'image/jpeg', 'image/png', 'image/gif', 'image/bmp',
-      'text/csv', 'text/plain', 'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      // Images
+      'image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/tiff',
+      // Documents
+      'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      // Spreadsheets
+      'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      // Text files
+      'text/plain', 'text/csv', 'text/html', 'text/xml', 'application/json', 'application/xml',
+      // Archives
+      'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed',
+      // Audio
+      'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/midi',
+      // Video
+      'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime',
+      // Code files
+      'text/javascript', 'text/css', 'text/x-python', 'text/x-java-source', 'text/x-c++src',
+      // Database files
+      'application/x-sqlite3', 'application/x-mysql', 'application/x-postgresql'
     ];
     
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only JPG, PNG, GIF, BMP images and CSV/TXT files are allowed.'));
+      cb(new Error('Invalid file type. Please check the allowed file types.'));
     }
   }
 });
@@ -162,20 +180,26 @@ router.post("/upload", async (req, res) => {
     }
 
     console.log("Encrypting dataset with buyer's public key...");
-    const encryptedDataset = encryptData(dataset, buyerPublicKey);
+    
+    // Use the re-encryption service to encrypt the data
+    const encryptedData = reEncryptionService.encryptData(buyerPublicKey, dataset);
+
+    // Structure the data for IPFS
+    const ipfsData = {
+      key: encryptedData.key, // The capsule from the proxy re-encryption
+      cipher: encryptedData.cipher, // The encrypted data
+      metadata: typeof metadata === 'string' ? metadata : JSON.stringify(metadata)
+    };
 
     console.log("Uploading encrypted dataset to IPFS...");
-    const ipfsHash = await uploadToIPFS({ encryptedDataset });
+    const ipfsHash = await uploadToIPFS(ipfsData);
 
     console.log("Converting price to Wei...");
-    // Handle price in different formats (string with decimal, whole number, etc.)
     let priceInWei;
     try {
-      // Check if price is already a valid number in wei
       if (/^\d+$/.test(price)) {
         priceInWei = price;
       } else {
-        // Convert from ETH to wei
         priceInWei = ethers.parseEther(price.toString());
       }
       console.log("Price in Wei:", priceInWei.toString());
@@ -218,17 +242,15 @@ router.post("/upload", async (req, res) => {
         });
         
         if (result && result !== "0x") {
-          // Convert result to number (remove 0x and leading zeros, then parse as hex)
           const hex = result.replace(/^0x0*/, '');
           datasetId = hex ? parseInt(hex, 16).toString() : "1";
           console.log("Got dataset ID from raw call:", datasetId);
         } else {
-          // If we couldn't get the counter, use logic based on the current count
           datasetId = (parseInt(currentCount.toString()) + 1).toString();
           console.log("Estimated dataset ID based on previous count:", datasetId);
         }
       }
-      
+
       res.json({ 
         message: "Encrypted dataset uploaded", 
         ipfsHash, 
@@ -237,13 +259,7 @@ router.post("/upload", async (req, res) => {
       });
     } catch (error) {
       console.error("Error getting dataset ID:", error);
-      // Still return success, but with a warning
-      res.json({ 
-        message: "Encrypted dataset uploaded", 
-        ipfsHash, 
-        transactionHash: tx.hash,
-        warning: "Could not determine dataset ID reliably. Try fetching all datasets."
-      });
+      res.status(500).json({ error: "Failed to get dataset ID: " + error.message });
     }
   } catch (error) {
     console.error("Upload error:", error);
@@ -273,43 +289,251 @@ router.post("/upload-file", upload.single('file'), async (req, res) => {
     }
 
     console.log("Processing uploaded file...");
-    // Save and process the file (apply watermark to images/CSV)
-    const fileInfo = await fileService.saveFile(
-      req.file.buffer, 
-      req.file.originalname, 
-      metadata, 
-      watermarkInfo || 'PRISM Marketplace'
-    );
     
-    console.log("File processed:", fileInfo);
+    // Generate metadata based on file type
+    let fileMetadata = {
+      originalFilename: req.file.originalname,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size,
+      uploadDate: new Date().toISOString(),
+      ...(typeof metadata === 'string' ? JSON.parse(metadata) : metadata)
+    };
 
-    console.log("Preparing file for encryption...");
-    // Encrypt the processed file
-    let metadataObj;
-    try {
-      metadataObj = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-    } catch (parseError) {
-      console.log("Metadata parse error:", parseError);
-      // If metadata isn't valid JSON, use it as a string
-      metadataObj = { description: metadata };
+    // Process file based on type
+    let processedData;
+    switch (req.file.mimetype) {
+      // Text and CSV files
+      case 'text/plain':
+      case 'text/csv':
+      case 'text/html':
+      case 'text/xml':
+      case 'application/json':
+      case 'application/xml':
+        processedData = req.file.buffer.toString('utf-8');
+        fileMetadata.contentType = 'text';
+        fileMetadata.textType = req.file.mimetype.split('/')[1];
+        
+        // Special handling for different text types
+        switch (req.file.mimetype) {
+          case 'text/csv':
+            const lines = processedData.split('\n');
+            if (lines.length > 0) {
+              fileMetadata.csvHeaders = lines[0].split(',').map(h => h.trim());
+              fileMetadata.rowCount = lines.length - 1;
+            }
+            break;
+          case 'application/json':
+            try {
+              const jsonData = JSON.parse(processedData);
+              fileMetadata.jsonStructure = {
+                type: typeof jsonData,
+                isArray: Array.isArray(jsonData),
+                keys: Object.keys(jsonData),
+                size: JSON.stringify(jsonData).length
+              };
+            } catch (e) {
+              console.log("JSON parsing error:", e);
+            }
+            break;
+          case 'text/html':
+          case 'text/xml':
+          case 'application/xml':
+            fileMetadata.markupType = req.file.mimetype.split('/')[1];
+            break;
+        }
+        break;
+
+      // Image files
+      case 'image/jpeg':
+      case 'image/png':
+      case 'image/gif':
+      case 'image/bmp':
+      case 'image/webp':
+      case 'image/tiff':
+        processedData = req.file.buffer.toString('base64');
+        fileMetadata.contentType = 'image';
+        fileMetadata.imageFormat = req.file.mimetype.split('/')[1];
+        try {
+          const sharp = require('sharp');
+          const imageInfo = await sharp(req.file.buffer).metadata();
+          fileMetadata.imageMetadata = {
+            width: imageInfo.width,
+            height: imageInfo.height,
+            format: imageInfo.format,
+            size: imageInfo.size,
+            orientation: imageInfo.orientation,
+            hasAlpha: imageInfo.hasAlpha,
+            hasProfile: imageInfo.hasProfile,
+            isOpaque: imageInfo.isOpaque,
+            channels: imageInfo.channels,
+            space: imageInfo.space
+          };
+        } catch (imageError) {
+          console.log("Could not get image metadata:", imageError);
+        }
+        break;
+
+      // Document files
+      case 'application/pdf':
+      case 'application/msword':
+      case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+        processedData = req.file.buffer.toString('base64');
+        fileMetadata.contentType = 'document';
+        fileMetadata.documentType = req.file.mimetype.split('/')[1];
+        try {
+          if (req.file.mimetype === 'application/pdf') {
+            const pdf = require('pdf-parse');
+            const pdfData = await pdf(req.file.buffer);
+            fileMetadata.documentMetadata = {
+              pages: pdfData.numpages,
+              textLength: pdfData.text.length,
+              hasText: pdfData.text.length > 0
+            };
+          }
+        } catch (docError) {
+          console.log("Document processing error:", docError);
+        }
+        break;
+
+      // Spreadsheet files
+      case 'application/vnd.ms-excel':
+      case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+        try {
+          const XLSX = require('xlsx');
+          const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+          processedData = XLSX.utils.sheet_to_csv(firstSheet);
+          fileMetadata.contentType = 'spreadsheet';
+          fileMetadata.spreadsheetMetadata = {
+            sheetCount: workbook.SheetNames.length,
+            sheetNames: workbook.SheetNames,
+            firstSheet: {
+              name: workbook.SheetNames[0],
+              range: firstSheet['!ref'],
+              rowCount: XLSX.utils.decode_range(firstSheet['!ref']).e.r + 1
+            }
+          };
+        } catch (excelError) {
+          console.error("Excel processing error:", excelError);
+          return res.status(400).json({ error: "Failed to process Excel file" });
+        }
+        break;
+
+      // Audio files
+      case 'audio/mpeg':
+      case 'audio/wav':
+      case 'audio/ogg':
+      case 'audio/midi':
+        processedData = req.file.buffer.toString('base64');
+        fileMetadata.contentType = 'audio';
+        fileMetadata.audioFormat = req.file.mimetype.split('/')[1];
+        try {
+          const mm = require('music-metadata');
+          const parser = new mm.Parser();
+          await parser.parseBuffer(req.file.buffer);
+          fileMetadata.audioMetadata = parser.metadata;
+        } catch (audioError) {
+          console.log("Audio metadata extraction error:", audioError);
+        }
+        break;
+
+      // Video files
+      case 'video/mp4':
+      case 'video/webm':
+      case 'video/ogg':
+      case 'video/quicktime':
+        processedData = req.file.buffer.toString('base64');
+        fileMetadata.contentType = 'video';
+        fileMetadata.videoFormat = req.file.mimetype.split('/')[1];
+        try {
+          const ffmpeg = require('fluent-ffmpeg');
+          const ffprobe = require('ffprobe-static');
+          ffmpeg.setFfprobePath(ffprobe.path);
+          const metadata = await new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(req.file.buffer, (err, metadata) => {
+              if (err) reject(err);
+              else resolve(metadata);
+            });
+          });
+          fileMetadata.videoMetadata = {
+            duration: metadata.format.duration,
+            size: metadata.format.size,
+            bitrate: metadata.format.bit_rate,
+            streams: metadata.streams.map(s => ({
+              type: s.codec_type,
+              codec: s.codec_name,
+              duration: s.duration
+            }))
+          };
+        } catch (videoError) {
+          console.log("Video metadata extraction error:", videoError);
+        }
+        break;
+
+      // Code files
+      case 'text/javascript':
+      case 'text/css':
+      case 'text/x-python':
+      case 'text/x-java-source':
+      case 'text/x-c++src':
+        processedData = req.file.buffer.toString('utf-8');
+        fileMetadata.contentType = 'code';
+        fileMetadata.language = req.file.mimetype.split('/')[1];
+        fileMetadata.codeMetadata = {
+          lineCount: processedData.split('\n').length,
+          characterCount: processedData.length,
+          hasComments: processedData.includes('//') || processedData.includes('/*')
+        };
+        break;
+
+      // Database files
+      case 'application/x-sqlite3':
+      case 'application/x-mysql':
+      case 'application/x-postgresql':
+        processedData = req.file.buffer.toString('base64');
+        fileMetadata.contentType = 'database';
+        fileMetadata.databaseType = req.file.mimetype.split('/')[1];
+        break;
+
+      // Archive files
+      case 'application/zip':
+      case 'application/x-rar-compressed':
+      case 'application/x-7z-compressed':
+        processedData = req.file.buffer.toString('base64');
+        fileMetadata.contentType = 'archive';
+        fileMetadata.archiveType = req.file.mimetype.split('/')[1];
+        try {
+          const unzipper = require('unzipper');
+          const zip = await unzipper.Open.buffer(req.file.buffer);
+          fileMetadata.archiveMetadata = {
+            entries: zip.files.length,
+            totalSize: zip.files.reduce((acc, file) => acc + file.uncompressedSize, 0)
+          };
+        } catch (archiveError) {
+          console.log("Archive processing error:", archiveError);
+        }
+        break;
+
+      default:
+        // For other file types, store as base64
+        processedData = req.file.buffer.toString('base64');
+        fileMetadata.contentType = 'binary';
+        fileMetadata.binaryType = req.file.mimetype;
     }
-    
-    const encryptedData = await fileService.prepareFileForStorage(
-      fileInfo.filePath, 
-      {
-        ...metadataObj,
-        originalFilename: req.file.originalname,
-        fileType: fileInfo.fileType,
-        fileSize: req.file.size
-      }, 
-      formattedPublicKey
-    );
 
-    console.log("Uploading encrypted file to IPFS...");
+    // Add watermark if specified
+    if (watermarkInfo) {
+      fileMetadata.watermark = watermarkInfo;
+    }
+
+    // Encrypt the processed data
+    console.log("Encrypting processed data...");
+    const encryptedData = encryptData(processedData, formattedPublicKey);
+
+    console.log("Uploading encrypted data to IPFS...");
     const ipfsHash = await uploadToIPFS({ encryptedData });
 
     console.log("Converting price to Wei...");
-    // Handle price in different formats
     let priceInWei;
     try {
       if (/^\d+$/.test(price)) {
@@ -324,48 +548,12 @@ router.post("/upload-file", upload.single('file'), async (req, res) => {
     }
 
     console.log("Storing IPFS hash on blockchain...");
-    const metadataForContract = {
-      type: 'file',
-      description: typeof metadata === 'string' ? metadata : JSON.stringify(metadata),
-      filename: req.file.originalname,
-      fileType: fileInfo.fileType
-    };
-    
-    // Make sure we're always sending a properly stringified JSON to the contract
-    let metadataString;
-    try {
-      metadataString = JSON.stringify(metadataForContract);
-    } catch (jsonError) {
-      console.error("Error stringifying metadata:", jsonError);
-      // Fallback to a simple stringified object if there's an issue
-      metadataString = JSON.stringify({ 
-        type: 'file', 
-        filename: req.file.originalname,
-        fileType: fileInfo.fileType
-      });
-    }
-    
+    const metadataString = JSON.stringify(fileMetadata);
     const tx = await contract.uploadDataset(ipfsHash, priceInWei, metadataString);
     
     console.log("Transaction sent, waiting for confirmation...");
     await tx.wait();
     console.log("Transaction confirmed:", tx.hash);
-
-    // Clean up temporary files
-    try {
-      console.log("Cleaning up temporary files...");
-      if (fs.existsSync(fileInfo.filePath)) {
-        fs.unlinkSync(fileInfo.filePath);
-      }
-      // Remove original file if it's different from the processed one
-      const originalFilePath = path.join(path.dirname(fileInfo.filePath), path.basename(fileInfo.filePath).replace('_watermarked', ''));
-      if (originalFilePath !== fileInfo.filePath && fs.existsSync(originalFilePath)) {
-        fs.unlinkSync(originalFilePath);
-      }
-    } catch (cleanupError) {
-      console.error("Error cleaning up temporary files:", cleanupError);
-      // Continue with response, this is not a fatal error
-    }
 
     // Get the latest dataset ID from the contract
     let datasetId;
@@ -378,15 +566,11 @@ router.post("/upload-file", upload.single('file'), async (req, res) => {
     }
 
     res.json({
-      message: "File uploaded and watermarked successfully",
+      message: "File uploaded and processed successfully",
       ipfsHash,
       transactionHash: tx.hash,
-      fileInfo: {
-        originalName: req.file.originalname,
-        fileType: fileInfo.fileType,
-        fileSize: req.file.size
-      },
-      datasetId
+      datasetId,
+      metadata: fileMetadata
     });
 
   } catch (error) {
@@ -1103,223 +1287,191 @@ router.get("/testRetrieve/:datasetId/:buyerPrivateKey", async (req, res) => {
 });
 
 // Add a route to get datasets owned by a specific user
-router.get("/user/:userAddress", async (req, res) => {
+router.get("/user/owned", async (req, res) => {
+  console.log('\n=== Starting owned datasets request ===');
+  console.log('Request received at:', new Date().toISOString());
+  console.log('Full URL:', req.originalUrl);
+  console.log('Query params:', JSON.stringify(req.query, null, 2));
+  
   try {
-    const { userAddress } = req.params;
+    const userAddress = req.query.address;
+    console.log('\n=== Address Validation ===');
+    console.log('Raw address from query:', userAddress);
+    console.log('Address type:', typeof userAddress);
+    console.log('Address length:', userAddress ? userAddress.length : 'undefined');
     
-    // Validate wallet address
-    if (!ethers.isAddress(userAddress)) {
-      return res.status(400).json({ error: "Invalid Ethereum address" });
+    if (!userAddress) {
+      console.log('ERROR: No address provided in query');
+      return res.status(400).json({ message: "User address is required" });
     }
-    
-    console.log("Fetching datasets for user:", userAddress);
-    
-    // Get the total number of datasets
-    let totalCount = 0;
-    let contractAccessError = null;
-    
+
+    // Validate and format Ethereum address
+    let formattedAddress;
     try {
-      const count = await contract.datasetCounter();
-      totalCount = parseInt(count.toString());
-    } catch (countError) {
-      console.error("Error getting dataset count:", countError);
-      contractAccessError = countError.message;
+      console.log('\n=== Address Formatting Steps ===');
       
-      // Use a fallback approach with raw call
-      try {
-        const callData = "0x8ada066e"; // Function selector for datasetCounter()
-        const result = await provider.call({
-          to: contract.target,
-          data: callData
-        });
-        
-        if (result && result !== "0x") {
-          const hex = result.replace(/^0x0*/, '');
-          totalCount = hex ? parseInt(hex, 16) : 0;
-          contractAccessError = null;
-        }
-      } catch (rawError) {
-        console.error("Raw call failed:", rawError);
-        contractAccessError = `${contractAccessError}; Raw call: ${rawError.message}`;
+      // Step 1: Check if it's a string
+      if (typeof userAddress !== 'string') {
+        console.log('ERROR: Address is not a string, type:', typeof userAddress);
+        return res.status(400).json({ message: "Address must be a string" });
       }
-    }
-    
-    // If we still can't get the contract data, return mock data for testing
-    if (contractAccessError) {
-      console.log("Returning mock data due to contract access error");
       
-      // Create some mock datasets for testing purposes
-      const mockDatasets = [
-        {
-          id: 1,
-          owner: userAddress,
-          ipfsHash: "QmXLKLYtCnVo2mdihGDnpC7ZzYcbpnpGJ7ZgVKLN9vgiUv",
-          price: "0.01",
-          isAvailable: true,
-          metadata: {
-            filename: "test_dataset_1.csv",
-            description: "A mock dataset for testing",
-            fileType: "csv"
-          },
-          timestamp: new Date().toISOString(),
-          accessCount: "0"
-        },
-        {
-          id: 2,
-          owner: userAddress,
-          ipfsHash: "QmYsF2y28zgejF8tBHj3zzC7QgKcCLXHrPnAHzGrxBDpMA",
-          price: "0.05",
-          isAvailable: true,
-          metadata: {
-            filename: "test_dataset_2.csv",
-            description: "Another mock dataset for testing",
-            fileType: "csv"
-          },
-          timestamp: new Date(Date.now() - 86400000).toISOString(),
-          accessCount: "2"
-        }
-      ];
+      // Step 2: Remove whitespace and convert to lowercase
+      const cleanAddress = userAddress.trim().toLowerCase();
+      console.log('1. After trimming and lowercase:', cleanAddress);
       
-      return res.json({ 
-        datasets: mockDatasets,
-        userAddress: userAddress,
-        total: mockDatasets.length,
-        mode: "mock",
-        error: contractAccessError
-      });
-    }
-    
-    if (totalCount === 0) {
-      return res.json({ datasets: [] });
-    }
-    
-    // Collect all datasets owned by the user
-    const userDatasets = [];
-    for (let i = 1; i <= totalCount; i++) {
+      // Step 3: Ensure 0x prefix
+      const addressWithPrefix = cleanAddress.startsWith('0x') ? cleanAddress : `0x${cleanAddress}`;
+      console.log('2. After ensuring 0x prefix:', addressWithPrefix);
+      
+      // Step 4: Check length
+      if (addressWithPrefix.length !== 42) {
+        console.log('ERROR: Invalid address length:', addressWithPrefix.length);
+        console.log('Expected length: 42 (including 0x)');
+        return res.status(400).json({ message: "Invalid Ethereum address length" });
+      }
+      
+      // Step 5: Check character set
+      if (!/^0x[a-f0-9]{40}$/.test(addressWithPrefix)) {
+        console.log('ERROR: Address contains invalid characters');
+        console.log('Address must contain only hexadecimal characters after 0x');
+        return res.status(400).json({ message: "Invalid Ethereum address characters" });
+      }
+      
+      // Step 6: Try ethers validation
       try {
-        let datasetDetails;
-        
+        console.log('3. Attempting ethers.getAddress() validation...');
+        formattedAddress = ethers.getAddress(addressWithPrefix).toLowerCase();
+        console.log('4. Successfully validated with ethers:', formattedAddress);
+      } catch (ethersError) {
+        console.log('ERROR: ethers.getAddress() failed:', ethersError.message);
+        console.log('Address that failed:', addressWithPrefix);
+        return res.status(400).json({ message: "Invalid Ethereum address format" });
+      }
+      
+    } catch (error) {
+      console.log('\n=== Address Validation Error ===');
+      console.log('Error message:', error.message);
+      console.log('Error stack:', error.stack);
+      return res.status(400).json({ message: "Invalid Ethereum address format" });
+    }
+
+    try {
+      console.log('\n=== Fetching Datasets ===');
+      console.log('Using formatted address:', formattedAddress);
+      console.log('Fetching dataset count...');
+      
+      const totalCount = await contract.datasetCounter();
+      console.log('Total datasets found:', totalCount.toString());
+      const datasets = [];
+
+      for (let i = 1; i <= totalCount; i++) {
         try {
-          // Try direct call first
-          datasetDetails = await contract.getDataset(i);
-        } catch (directError) {
-          console.error(`Direct call error for dataset ${i}:`, directError.message);
+          console.log(`\nProcessing dataset ${i}...`);
+          const dataset = await contract.getDataset(i);
+          console.log(`Dataset ${i} owner:`, dataset[0]);
           
-          // Try with raw call if direct call fails
-          const callData = contract.interface.encodeFunctionData("getDataset", [i]);
-          const rawResult = await provider.call({
-            to: contract.target,
-            data: callData
-          });
-          
-          datasetDetails = safeDecodeResult("getDataset", rawResult);
-        }
-        
-        // Check if this dataset is owned by the requested user
-        if (datasetDetails && datasetDetails[0] && 
-            datasetDetails[0].toLowerCase() === userAddress.toLowerCase()) {
-          
-          // Parse metadata
-          let metadataObj = {};
-          try {
-            if (typeof datasetDetails[4] === 'string') {
-              metadataObj = JSON.parse(datasetDetails[4]);
-            } else {
-              metadataObj = datasetDetails[4];
-            }
-          } catch (e) {
-            console.log("Metadata parsing error:", e);
-            metadataObj = { raw: datasetDetails[4] };
+          if (dataset[0].toLowerCase() === formattedAddress) {
+            console.log(`Dataset ${i} belongs to user`);
+            const metadata = typeof dataset[4] === 'string' ? dataset[4] : JSON.stringify(dataset[4]);
+            datasets.push({
+              id: i.toString(),
+              owner: dataset[0],
+              ipfsHash: dataset[1],
+              price: ethers.formatEther(dataset[2]),
+              isAvailable: dataset[3],
+              metadata: metadata,
+              timestamp: new Date(parseInt(dataset[5]) * 1000).toISOString(),
+              accessCount: dataset[6].toString()
+            });
           }
-          
-          userDatasets.push({
-            id: i,
-            owner: datasetDetails[0],
-            ipfsHash: datasetDetails[1],
-            price: ethers.formatEther(datasetDetails[2]),
-            isAvailable: datasetDetails[3],
-            metadata: metadataObj,
-            timestamp: new Date(Number(datasetDetails[5]) * 1000).toISOString(),
-            accessCount: datasetDetails[6].toString()
-          });
+        } catch (error) {
+          console.error(`Error processing dataset ${i}:`, error);
+          continue;
         }
-      } catch (error) {
-        console.warn(`Error checking dataset ${i}:`, error);
-        // Continue with next dataset
       }
+
+      console.log(`\n=== Request Complete ===`);
+      console.log(`Found ${datasets.length} datasets owned by user`);
+      res.json(datasets);
+    } catch (error) {
+      console.error('\n=== Dataset Count Error ===');
+      console.error('Error fetching dataset count:', error);
+      res.status(500).json({ message: "Failed to fetch dataset count" });
     }
-    
-    res.json({ 
-      datasets: userDatasets,
-      userAddress: userAddress,
-      total: userDatasets.length
-    });
-    
   } catch (error) {
-    console.error("Error fetching user datasets:", error);
-    res.status(500).json({ error: "Failed to fetch user datasets: " + error.message });
+    console.error('\n=== General Error ===');
+    console.error('Error in owned datasets route:', error);
+    res.status(500).json({ message: error.message });
   }
 });
 
-// Add a debug endpoint to check contract and backend state
-router.get("/debug", async (req, res) => {
+// Get datasets purchased by user
+router.get("/user/purchased", async (req, res) => {
+  console.log('Received request for purchased datasets');
+  console.log('Query params:', req.query);
   try {
-    console.log("Running debug endpoint");
+    const userAddress = req.query.address;
+    console.log('Received address:', userAddress);
     
-    // Check if contract and provider are initialized
-    const contractInfo = {
-      contractAddress: contract.target,
-      providerNetwork: provider.network ? provider.network.name : "unknown",
-      walletConnected: !!wallet.address,
-      hasInterface: !!contract.interface,
-      interfaceFunctions: Object.keys(contract.interface?.functions || {})
-    };
-    
-    // Try to call datasetCounter
-    let datasetCount = "Error";
-    try {
-      const count = await contract.datasetCounter();
-      datasetCount = count.toString();
-    } catch (counterError) {
-      console.error("Error getting dataset count:", counterError);
-      datasetCount = `Error: ${counterError.message}`;
+    if (!userAddress) {
+      console.log('No address provided');
+      return res.status(400).json({ message: "User address is required" });
     }
-    
-    // Try low-level call to get datasetCounter
-    let rawCallResult = "Error";
+
+    // Validate and format Ethereum address
+    let formattedAddress;
     try {
-      const callData = "0x8ada066e"; // Function selector for datasetCounter()
-      const result = await provider.call({
-        to: contract.target,
-        data: callData
-      });
-      rawCallResult = result;
-    } catch (rawError) {
-      console.error("Raw call failed:", rawError);
-      rawCallResult = `Error: ${rawError.message}`;
+      console.log('Attempting to format address:', userAddress);
+      formattedAddress = ethers.getAddress(userAddress).toLowerCase();
+      console.log('Successfully formatted address:', formattedAddress);
+    } catch (error) {
+      console.log('Address formatting failed:', error.message);
+      return res.status(400).json({ message: "Invalid Ethereum address format" });
     }
-    
-    res.json({
-      timestamp: new Date().toISOString(),
-      environment: {
-        nodeEnv: process.env.NODE_ENV,
-        port: process.env.PORT || "5000",
-        contractAddressEnv: process.env.CONTRACT_ADDRESS || "Not set"
-      },
-      contract: contractInfo,
-      testCalls: {
-        datasetCounter: datasetCount,
-        rawCallResult
+
+    try {
+      console.log('Fetching dataset count...');
+      const totalCount = await contract.datasetCounter();
+      console.log('Total datasets:', totalCount.toString());
+      const datasets = [];
+
+      for (let i = 1; i <= totalCount; i++) {
+        try {
+          console.log(`Checking access for dataset ${i}...`);
+          const hasAccess = await contract.hasAccess(i, formattedAddress);
+          console.log(`Access check result for dataset ${i}:`, hasAccess);
+          
+          if (hasAccess) {
+            console.log(`User has access to dataset ${i}`);
+            const dataset = await contract.getDataset(i);
+            const metadata = typeof dataset[4] === 'string' ? dataset[4] : JSON.stringify(dataset[4]);
+            datasets.push({
+              id: i.toString(),
+              owner: dataset[0],
+              ipfsHash: dataset[1],
+              price: ethers.formatEther(dataset[2]),
+              isAvailable: dataset[3],
+              metadata: metadata,
+              timestamp: new Date(parseInt(dataset[5]) * 1000).toISOString(),
+              accessCount: dataset[6].toString()
+            });
+          }
+        } catch (error) {
+          console.error(`Error checking access for dataset ${i}:`, error);
+          continue;
+        }
       }
-    });
-    
+
+      console.log(`Found ${datasets.length} datasets purchased by user`);
+      res.json(datasets);
+    } catch (error) {
+      console.error('Error fetching dataset count:', error);
+      res.status(500).json({ message: "Failed to fetch dataset count" });
+    }
   } catch (error) {
-    console.error("Debug endpoint error:", error);
-    res.status(500).json({ 
-      error: "Debug endpoint failed",
-      message: error.message,
-      stack: error.stack
-    });
+    console.error('Error in purchased datasets route:', error);
+    res.status(500).json({ message: error.message });
   }
 });
 

@@ -7,6 +7,7 @@ const papa = require('papaparse');
 const EC = require("elliptic").ec;
 const ec = new EC("secp256k1");
 const CryptoJS = require("crypto-js");
+const fetch = require('node-fetch');
 
 // Set up the upload directory
 const uploadDir = path.join(__dirname, '../uploads');
@@ -182,10 +183,94 @@ async function prepareFileForStorage(filePath, metadata, publicKey) {
   }
 }
 
+/**
+ * Fetches dataset content from IPFS using multiple gateways
+ * @param {string} ipfsHash - The IPFS hash of the dataset
+ * @returns {Promise<Object>} - The dataset content and metadata
+ */
+const getDatasetFromIPFS = async (ipfsHash) => {
+  // List of IPFS gateways to try
+  const gateways = [
+    'https://ipfs.io/ipfs/',
+    'https://cloudflare-ipfs.com/ipfs/',
+    'https://gateway.pinata.cloud/ipfs/',
+    'https://ipfs.filebase.io/ipfs/',
+    'https://ipfs.infura.io/ipfs/'
+  ];
+
+  let lastError = null;
+
+  // Try each gateway until one succeeds
+  for (const gateway of gateways) {
+    try {
+      const ipfsUrl = `${gateway}${ipfsHash}`;
+      console.log('Trying IPFS gateway:', ipfsUrl);
+
+      // Add timeout to the fetch request
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+      const response = await fetch(ipfsUrl, {
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/json, text/plain, */*'
+        }
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        throw new Error(`IPFS gateway ${gateway} returned status: ${response.status}`);
+      }
+
+      // Try to parse the response data
+      let data;
+      try {
+        // Try JSON first
+        data = await response.json();
+        console.log('Successfully parsed IPFS data as JSON');
+      } catch (jsonError) {
+        console.error('JSON parsing failed:', jsonError);
+        
+        // If JSON parsing fails, try text
+        const textData = await response.text();
+        console.log('Parsed IPFS data as text');
+        
+        try {
+          // Try to see if it's JSON with some formatting issues
+          data = JSON.parse(textData);
+        } catch (textJsonError) {
+          console.error('Text JSON parsing failed:', textJsonError);
+          
+          // If all parsing fails, just use the raw text
+          data = { encryptedDataset: textData };
+          console.log('Using raw text as encryptedDataset');
+        }
+      }
+
+      // Validate the data structure
+      if (!data.encryptedDataset) {
+        throw new Error('No encrypted dataset found in IPFS data');
+      }
+
+      return data;
+    } catch (error) {
+      console.error(`Error with gateway ${gateway}:`, error.message);
+      lastError = error;
+      // Continue to next gateway
+      continue;
+    }
+  }
+
+  // If we get here, all gateways failed
+  throw new Error(`All IPFS gateways failed. Last error: ${lastError.message}`);
+};
+
 module.exports = {
   saveFile,
   watermarkImage,
   processCSV,
   prepareFileForStorage,
-  encryptData
+  encryptData,
+  getDatasetFromIPFS
 }; 
