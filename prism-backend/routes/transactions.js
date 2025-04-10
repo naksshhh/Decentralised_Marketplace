@@ -10,47 +10,85 @@ router.get("/recent", async (req, res) => {
     console.log('\n=== Fetching Recent Transactions ===');
     const currentBlock = await provider.getBlockNumber();
     const BLOCK_RANGE = 1000; // Last 1000 blocks
+    const CHUNK_SIZE = 499; // Query in chunks of 100 blocks
     const fromBlock = Math.max(0, currentBlock - BLOCK_RANGE);
     
-    // Get purchase events
-    const purchaseFilter = contract.filters.DatasetPurchased();
-    const purchaseEvents = await contract.queryFilter(purchaseFilter, fromBlock, currentBlock);
+    // Initialize empty arrays for events
+    let purchaseEvents = [];
+    let uploadEvents = [];
     
-    // Get upload events
-    const uploadFilter = contract.filters.DatasetUploaded();
-    const uploadEvents = await contract.queryFilter(uploadFilter, fromBlock, currentBlock);
+    // Query blocks in chunks
+    for (let chunkStart = fromBlock; chunkStart < currentBlock; chunkStart += CHUNK_SIZE) {
+      const chunkEnd = Math.min(chunkStart + CHUNK_SIZE - 1, currentBlock);
+      console.log(`Querying blocks ${chunkStart} to ${chunkEnd}`);
+      
+      // Try to get purchase events for this chunk
+      try {
+        const purchaseFilter = contract.filters.DatasetPurchased();
+        const chunkPurchaseEvents = await contract.queryFilter(purchaseFilter, chunkStart, chunkEnd);
+        purchaseEvents = purchaseEvents.concat(chunkPurchaseEvents);
+        console.log(`Found ${chunkPurchaseEvents.length} purchase events in this chunk`);
+      } catch (error) {
+        console.error(`Error fetching purchase events for blocks ${chunkStart}-${chunkEnd}:`, error);
+        // Continue with next chunk
+      }
+      
+      // Try to get upload events for this chunk
+      try {
+        const uploadFilter = contract.filters.DatasetUploaded();
+        const chunkUploadEvents = await contract.queryFilter(uploadFilter, chunkStart, chunkEnd);
+        uploadEvents = uploadEvents.concat(chunkUploadEvents);
+        console.log(`Found ${chunkUploadEvents.length} upload events in this chunk`);
+      } catch (error) {
+        console.error(`Error fetching upload events for blocks ${chunkStart}-${chunkEnd}:`, error);
+        // Continue with next chunk
+      }
+    }
+    
+    console.log(`Total purchase events found: ${purchaseEvents.length}`);
+    console.log(`Total upload events found: ${uploadEvents.length}`);
     
     // Combine and process events
     const transactions = [];
     
     // Process purchase events
     for (const event of purchaseEvents) {
-      const { datasetId, buyer } = event.args;
-      const dataset = await contract.getDataset(datasetId);
-      transactions.push({
-        id: event.transactionHash,
-        type: 'purchase',
-        amount: ethers.formatEther(dataset[2]),
-        timestamp: new Date(event.blockNumber * 1000).toISOString(),
-        status: 'completed',
-        datasetId: datasetId.toString(),
-        user: buyer
-      });
+      try {
+        const { datasetId, buyer } = event.args;
+        const dataset = await contract.getDataset(datasetId);
+        transactions.push({
+          id: event.transactionHash,
+          type: 'purchase',
+          amount: ethers.formatEther(dataset[2]),
+          timestamp: new Date(event.blockNumber * 1000).toISOString(),
+          status: 'completed',
+          datasetId: datasetId.toString(),
+          user: buyer
+        });
+      } catch (error) {
+        console.error("Error processing purchase event:", error);
+        continue;
+      }
     }
     
     // Process upload events
     for (const event of uploadEvents) {
-      const { datasetId, owner } = event.args;
-      const dataset = await contract.getDataset(datasetId);
-      transactions.push({
-        id: event.transactionHash,
-        type: 'upload',
-        amount: ethers.formatEther(dataset[2]),
-        timestamp: new Date(event.blockNumber * 1000).toISOString(),
-        status: 'completed',
-        datasetId: datasetId.toString(),
-        user: owner
-      });
+      try {
+        const { datasetId, owner } = event.args;
+        const dataset = await contract.getDataset(datasetId);
+        transactions.push({
+          id: event.transactionHash,
+          type: 'upload',
+          amount: ethers.formatEther(dataset[2]),
+          timestamp: new Date(event.blockNumber * 1000).toISOString(),
+          status: 'completed',
+          datasetId: datasetId.toString(),
+          user: owner
+        });
+      } catch (error) {
+        console.error("Error processing upload event:", error);
+        continue;
+      }
     }
     
     // Sort by timestamp (newest first)
@@ -60,7 +98,8 @@ router.get("/recent", async (req, res) => {
     res.json(transactions.slice(0, 10));
   } catch (error) {
     console.error("Error fetching recent transactions:", error);
-    res.status(500).json({ error: "Failed to fetch recent transactions" });
+    // Return empty array instead of error to prevent frontend issues
+    res.json([]);
   }
 });
 

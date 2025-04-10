@@ -1475,4 +1475,105 @@ router.get("/user/purchased", async (req, res) => {
   }
 });
 
+// Get all datasets
+router.get("/", async (req, res) => {
+  try {
+    console.log("Fetching all datasets...");
+    const totalCount = await contract.datasetCounter();
+    console.log("Total datasets:", totalCount.toString());
+    
+    const datasets = [];
+    for (let i = 1; i <= totalCount; i++) {
+      try {
+        const dataset = await contract.getDataset(i);
+        const metadata = typeof dataset[4] === 'string' ? dataset[4] : JSON.stringify(dataset[4]);
+        datasets.push({
+          id: i.toString(),
+          owner: dataset[0],
+          ipfsHash: dataset[1],
+          price: ethers.formatEther(dataset[2]),
+          isAvailable: dataset[3],
+          metadata: metadata,
+          timestamp: new Date(Number(dataset[5]) * 1000).toISOString(),
+          accessCount: dataset[6].toString()
+        });
+      } catch (error) {
+        console.error(`Error fetching dataset ${i}:`, error);
+        continue;
+      }
+    }
+    
+    res.json(datasets);
+  } catch (error) {
+    console.error("Error fetching datasets:", error);
+    res.status(500).json({ error: "Failed to fetch datasets" });
+  }
+});
+
+// Purchase dataset by ID
+router.post("/purchase/:id", async (req, res) => {
+  try {
+    const datasetId = req.params.id;
+    const { price, buyerPublicKey, transactionHash } = req.body;
+    
+    if (!datasetId || !price || !buyerPublicKey || !transactionHash) {
+      return res.status(400).json({ error: "Missing required parameters" });
+    }
+    
+    console.log(`Processing purchase for dataset ${datasetId}`);
+    console.log(`Price: ${price}, Buyer: ${buyerPublicKey}, TxHash: ${transactionHash}`);
+    
+    // Verify the transaction hash
+    try {
+      const receipt = await provider.getTransactionReceipt(transactionHash);
+      if (!receipt) {
+        return res.status(400).json({ error: "Invalid transaction hash" });
+      }
+      
+      // Check if the transaction was successful
+      if (receipt.status !== 1) {
+        return res.status(400).json({ error: "Transaction failed on blockchain" });
+      }
+      
+      // Verify the transaction was for this dataset
+      const purchaseFilter = contract.filters.DatasetPurchased(datasetId, buyerPublicKey);
+      const events = await contract.queryFilter(purchaseFilter, receipt.blockNumber, receipt.blockNumber);
+      
+      if (events.length === 0) {
+        return res.status(400).json({ error: "Transaction not found for this dataset" });
+      }
+      
+      // Create a purchase record in the database
+      const purchase = new Purchase({
+        buyerAddress: buyerPublicKey,
+        datasetId: datasetId,
+        price: price,
+        transactionHash: transactionHash,
+        status: 'completed'
+      });
+      
+      await purchase.save();
+      
+      // Return success response
+      res.json({
+        message: "Purchase recorded successfully",
+        purchase: {
+          id: purchase._id,
+          datasetId: datasetId,
+          buyer: buyerPublicKey,
+          price: price,
+          transactionHash: transactionHash,
+          status: 'completed'
+        }
+      });
+    } catch (error) {
+      console.error("Error verifying transaction:", error);
+      return res.status(500).json({ error: "Failed to verify transaction" });
+    }
+  } catch (error) {
+    console.error("Error processing purchase:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

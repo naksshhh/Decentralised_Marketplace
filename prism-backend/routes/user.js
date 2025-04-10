@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { ethers } = require('ethers');
 const auth = require('../middleware/auth');
 const { contract, provider } = require('../config/web3');
 
@@ -202,13 +203,29 @@ router.get('/purchases', auth, async (req, res) => {
         };
       }
       
+      // Ensure we have a valid timestamp
+      let purchaseDate;
+      try {
+        const timestamp = Number(dataset[5]); // Get timestamp from dataset
+        if (isNaN(timestamp) || timestamp <= 0) {
+          // If timestamp is invalid, use current date
+          purchaseDate = new Date().toISOString();
+        } else {
+          // Convert Unix timestamp to milliseconds and create ISO string
+          purchaseDate = new Date(timestamp * 1000).toISOString();
+        }
+      } catch (error) {
+        console.error('Error processing timestamp:', error);
+        purchaseDate = new Date().toISOString(); // Fallback to current date
+      }
+      
       return {
         id: event.transactionHash,
         datasetId: datasetId.toString(),
         datasetName: metadata.name || 'Unknown Dataset',
-        price: ethers.formatEther(dataset.price),
+        price: ethers.formatEther(dataset[2]),
         transactionHash: event.transactionHash,
-        purchaseDate: new Date(Number(dataset.timestamp) * 1000).toISOString(),
+        purchaseDate: purchaseDate,
         status: 'completed',
         metadata
       };
