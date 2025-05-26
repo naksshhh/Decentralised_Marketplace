@@ -102,11 +102,11 @@ const PreviewCode = styled('pre')(({ theme }) => ({
 
 const FileUpload = ({ onUpload }) => {
   const [file, setFile] = useState(null);
-  const [price, setPrice] = useState('0.01');
+  const [price, setPrice] = useState('0.00');
   const [description, setDescription] = useState('');
+  const [watermarkInfo, setwatermarkinfo] = useState('');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
-  const [metadata, setMetadata] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState(null);
 
@@ -114,16 +114,6 @@ const FileUpload = ({ onUpload }) => {
     const selectedFile = acceptedFiles[0];
     setFile(selectedFile);
     setError(null);
-    
-    // Generate initial metadata
-    const initialMetadata = {
-      originalFilename: selectedFile.name,
-      fileType: selectedFile.type,
-      fileSize: selectedFile.size,
-      uploadDate: new Date().toISOString(),
-      description: ''
-    };
-    setMetadata(initialMetadata);
 
     // Generate preview if possible
     generatePreview(selectedFile);
@@ -226,24 +216,23 @@ const FileUpload = ({ onUpload }) => {
     setError(null);
 
     try {
-      // Create metadata object
-      const metadataObj = {
-        ...metadata,
-        description,
-        originalFilename: file.name,
-        fileType: file.type,
-        fileSize: file.size,
-        uploadDate: new Date().toISOString()
-      };
-
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const address = accounts[0];
+      const message = `Upload confirmation at ${Date.now()}`;
+      const signature = await window.ethereum.request({
+        method: 'personal_sign',
+        params: [message, address]
+      });
       // Create FormData for file upload
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('dataset', file);
       formData.append('price', price);
-      formData.append('metadata', JSON.stringify(metadataObj));
-      formData.append('buyerPublicKey', '04' + '0'.repeat(128)); // Temporary public key for testing
+      formData.append('OwnerPublicKey', address);
+      formData.append('signature', signature);
+      formData.append('watermarkInfo', watermarkInfo);
 
-      const response = await fetch('http://localhost:5000/api/datasets/upload-file', {
+
+      const response = await fetch('http://localhost:5000/api/datasets/upload', {
         method: 'POST',
         body: formData
       });
@@ -325,7 +314,7 @@ const FileUpload = ({ onUpload }) => {
                 onClick={(e) => {
                   e.stopPropagation();
                   setFile(null);
-                  setMetadata(null);
+          
                   setPreviewContent(null);
                 }}
               >
@@ -360,6 +349,17 @@ const FileUpload = ({ onUpload }) => {
                 }}
               />
             </Grid>
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                label="Watermark Info (optional)"
+                multiline
+                rows={3}
+                helperText="If left blank, your public key will be used as a default watermark."
+                value={watermarkInfo}
+                onChange={(e) => setwatermarkinfo(e.target.value)}
+              />
+            </Grid>
             <Grid item xs={12}>
               <TextField
                 fullWidth
@@ -371,93 +371,7 @@ const FileUpload = ({ onUpload }) => {
               />
             </Grid>
           </Grid>
-
-          {metadata && (
-            <Box sx={{ mt: 3 }}>
-              <Typography variant="h6" gutterBottom>
-                File Metadata
-              </Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6}>
-                  <Chip
-                    icon={<DescriptionIcon />}
-                    label={`Type: ${metadata.fileType}`}
-                    variant="outlined"
-                    sx={{ mr: 1, mb: 1 }}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <Chip
-                    icon={<StorageIcon />}
-                    label={`Size: ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB`}
-                    variant="outlined"
-                    sx={{ mr: 1, mb: 1 }}
-                  />
-                </Grid>
-                {metadata.contentType && (
-                  <Grid item xs={12} sm={6}>
-                    <Chip
-                      icon={<DescriptionIcon />}
-                      label={`Content: ${metadata.contentType}`}
-                      variant="outlined"
-                      sx={{ mr: 1, mb: 1 }}
-                    />
-                  </Grid>
-                )}
-                {metadata.imageMetadata && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle2" gutterBottom>
-                      Image Details:
-                    </Typography>
-                    <Grid container spacing={1}>
-                      <Grid item xs={12} sm={6}>
-                        <Chip
-                          label={`Dimensions: ${metadata.imageMetadata.width}x${metadata.imageMetadata.height}`}
-                          variant="outlined"
-                          size="small"
-                          sx={{ mr: 1, mb: 1 }}
-                        />
-                      </Grid>
-                      <Grid item xs={12} sm={6}>
-                        <Chip
-                          label={`Format: ${metadata.imageMetadata.format}`}
-                          variant="outlined"
-                          size="small"
-                          sx={{ mr: 1, mb: 1 }}
-                        />
-                      </Grid>
-                    </Grid>
-                  </Grid>
-                )}
-                {metadata.spreadsheetMetadata && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle2" gutterBottom>
-                      Spreadsheet Details:
-                    </Typography>
-                    <Grid container spacing={1}>
-                      <Grid item xs={12} sm={6}>
-                        <Chip
-                          label={`Sheets: ${metadata.spreadsheetMetadata.sheetCount}`}
-                          variant="outlined"
-                          size="small"
-                          sx={{ mr: 1, mb: 1 }}
-                        />
-                      </Grid>
-                      <Grid item xs={12} sm={6}>
-                        <Chip
-                          label={`First Sheet: ${metadata.spreadsheetMetadata.firstSheet.name}`}
-                          variant="outlined"
-                          size="small"
-                          sx={{ mr: 1, mb: 1 }}
-                        />
-                      </Grid>
-                    </Grid>
-                  </Grid>
-                )}
-              </Grid>
-            </Box>
-          )}
-
+          
           {error && (
             <Alert severity="error" sx={{ mt: 2 }}>
               {error}

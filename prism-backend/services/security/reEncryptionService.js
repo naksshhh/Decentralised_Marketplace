@@ -1,7 +1,6 @@
 const Proxy = require('../../../proxy re-encryption/src/proxy.js');
 const CryptoJS = require('crypto-js');
 const EC = require('elliptic').ec;
-const ec = new EC('secp256k1');
 
 class ReEncryptionService {
     constructor() {
@@ -22,11 +21,14 @@ class ReEncryptionService {
         return true;
     }
 
-    validatePrivateKey(privateKey) {
-        if (privateKey.length !== 64) { // 32 bytes in hex
-            throw new Error('Invalid private key length');
-        }
-        return true;
+    deriveMasterKeyFromSignature(signature) {
+        const raw = signature.startsWith('0x') ? signature.slice(2, 66) : signature.slice(0, 64);
+        const padded = raw.padEnd(64, '0');
+        const x = Proxy.from_hex(padded);
+        const P = Proxy.point_from_x(x);
+        const k = Proxy.big_from_bytes(x);
+        const Q = Proxy.scalar_mult(k, P);
+        return Proxy.to_hex(Q.x);
     }
 
     encryptData(publicKey, data) {
@@ -50,7 +52,7 @@ class ReEncryptionService {
         const encrypted = CryptoJS.AES.encrypt(dataWordArray, key, this.options);
 
         return {
-            key: Proxy.to_hex(cp.capsule.to_bytes()),
+            capsule: Proxy.to_hex(cp.capsule.to_bytes()),
             cipher: encrypted.toString()
         };
     }

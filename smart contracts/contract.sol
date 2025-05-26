@@ -1,132 +1,170 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-contract DecentralizedMarketplace {
+contract OptimizedDataMarketplace {
     struct Dataset {
         address owner;
         string ipfsHash;
+        string metadata;
         uint256 price;
         bool isAvailable;
-        string metadata;
         uint256 timestamp;
         uint256 accessCount;
-        string watermarkHash;  // Hash of the watermarked data
-        string reEncryptionKey; // Proxy re-encryption key
-        bool isWatermarked;
+        string encryptedMasterKey;
+        string reEncryptionKey;
         bool isReEncrypted;
+        mapping(address => bool) hasPurchased;
+        mapping(address => string) transformedCapsules;
+        mapping(address => string) userWatermarks;
+        address[] previousOwners;
+        uint256[] transferTimestamps;
     }
 
     mapping(uint256 => Dataset) public datasets;
-    mapping(uint256 => mapping(address => bool)) public accessPermissions;
-    mapping(uint256 => mapping(address => string)) public userWatermarks; // Store user-specific watermarks
     uint256 public datasetCounter;
+    address public admin;
 
-    event DatasetUploaded(uint256 indexed datasetId, address indexed owner, string ipfsHash, uint256 price, string metadata, uint256 timestamp);
+      constructor() {
+        admin = msg.sender;
+    }
+
+    event DatasetListed(uint256 indexed datasetId, address indexed owner, uint256 price);
     event DatasetPurchased(uint256 indexed datasetId, address indexed buyer);
-    event DatasetUpdated(uint256 indexed datasetId, string newMetadata, uint256 newPrice);
-    event DatasetRemoved(uint256 indexed datasetId);
+    event CapsuleTransformed(uint256 indexed datasetId, address indexed buyer);
     event DatasetWatermarked(uint256 indexed datasetId, string watermarkHash);
     event DatasetReEncrypted(uint256 indexed datasetId, string reEncryptionKey);
+    event DatasetUpdated(uint256 indexed datasetId, string newMetadata, uint256 newPrice);
+    event DatasetRemoved(uint256 indexed datasetId);
+    event OwnershipTransferred(uint256 indexed datasetId, address indexed previousOwner, address indexed newOwner, uint256 timestamp);
 
-    function uploadDataset(string memory _ipfsHash, uint256 _price, string memory _metadata) public {
+    modifier onlyOwner(uint256 _datasetId) {
+        require(msg.sender == datasets[_datasetId].owner, "Not the dataset owner");
+        _;
+    }
+
+    function uploadDataset(
+        string memory _ipfsHash,
+        string memory _metadata,
+        string memory _encryptedMasterKey,  
+        uint256 _price
+    ) public returns (uint256) {
         datasetCounter++;
-        datasets[datasetCounter] = Dataset(
-            msg.sender,
-            _ipfsHash,
-            _price,
-            true,
-            _metadata,
-            block.timestamp,
-            0,
-            "",
-            "",
-            false,
-            false
-        );
-        emit DatasetUploaded(datasetCounter, msg.sender, _ipfsHash, _price, _metadata, block.timestamp);
-    }
+        Dataset storage ds = datasets[datasetCounter];
+        ds.owner = msg.sender;
+        ds.ipfsHash = _ipfsHash;
+        ds.metadata = _metadata;
+        ds.encryptedMasterKey = _encryptedMasterKey;
+        ds.price = _price;
+        ds.timestamp = block.timestamp;
+        ds.isAvailable = true;
 
-    function addWatermark(uint256 _datasetId, string memory _watermarkHash) public {
-        Dataset storage dataset = datasets[_datasetId];
-        require(msg.sender == dataset.owner, "Only owner can add watermark");
-        require(dataset.isAvailable, "Dataset not available");
-        
-        dataset.watermarkHash = _watermarkHash;
-        dataset.isWatermarked = true;
-        emit DatasetWatermarked(_datasetId, _watermarkHash);
-    }
-
-    function addReEncryptionKey(uint256 _datasetId, string memory _reEncryptionKey) public {
-        Dataset storage dataset = datasets[_datasetId];
-        require(msg.sender == dataset.owner, "Only owner can add re-encryption key");
-        require(dataset.isAvailable, "Dataset not available");
-        
-        dataset.reEncryptionKey = _reEncryptionKey;
-        dataset.isReEncrypted = true;
-        emit DatasetReEncrypted(_datasetId, _reEncryptionKey);
+        emit DatasetListed(datasetCounter, msg.sender, _price);
+        return datasetCounter;
     }
 
     function purchaseDataset(uint256 _datasetId) public payable {
-        Dataset storage dataset = datasets[_datasetId];
-        require(dataset.isAvailable, "Dataset not available");
-        require(msg.value >= dataset.price, "Insufficient funds");
+        Dataset storage ds = datasets[_datasetId];
+        require(ds.isAvailable, "Dataset not available");
+        require(msg.value >= ds.price, "Insufficient payment");
+        require(!ds.hasPurchased[msg.sender], "Already purchased");
+        require(msg.sender != ds.owner, "Owner cannot purchase own dataset");
 
-        payable(dataset.owner).transfer(msg.value);
-        accessPermissions[_datasetId][msg.sender] = true;
-        dataset.accessCount++;
+        ds.hasPurchased[msg.sender] = true;
+        ds.accessCount++;
+        payable(ds.owner).transfer(msg.value);
+
         emit DatasetPurchased(_datasetId, msg.sender);
     }
 
-    function hasAccess(uint256 _datasetId, address _user) public view returns (bool) {
-        return accessPermissions[_datasetId][_user];
+    function storeTransformedCapsule(uint256 _datasetId, address _buyer, string memory _capsule) public {
+        Dataset storage ds = datasets[_datasetId];
+        require(msg.sender == ds.owner || isAuthorizedOracle(msg.sender), "Not authorized");
+        require(ds.hasPurchased[_buyer], "Buyer hasn't purchased");
+
+        ds.transformedCapsules[_buyer] = _capsule;
+        emit CapsuleTransformed(_datasetId, _buyer);
     }
 
-    function updateDataset(uint256 _datasetId, string memory _newMetadata, uint256 _newPrice) public {
-        Dataset storage dataset = datasets[_datasetId];
-        require(msg.sender == dataset.owner, "Only owner can update");
-        dataset.metadata = _newMetadata;
-        dataset.price = _newPrice;
-        emit DatasetUpdated(_datasetId, _newMetadata, _newPrice);
+
+    function addReEncryptionKey(uint256 _datasetId, string memory _reEncryptionKey) public onlyOwner(_datasetId) {
+        Dataset storage ds = datasets[_datasetId];
+        ds.reEncryptionKey = _reEncryptionKey;
+        ds.isReEncrypted = true;
+        emit DatasetReEncrypted(_datasetId, _reEncryptionKey);
     }
 
-    function removeDataset(uint256 _datasetId) public {
-        Dataset storage dataset = datasets[_datasetId];
-        require(msg.sender == dataset.owner, "Only owner can remove");
-        dataset.isAvailable = false;
+    function updateDataset(uint256 _datasetId, string memory _metadata, uint256 _price) public onlyOwner(_datasetId) {
+        Dataset storage ds = datasets[_datasetId];
+        ds.metadata = _metadata;
+        ds.price = _price;
+        emit DatasetUpdated(_datasetId, _metadata, _price);
+    }
+
+    function removeDataset(uint256 _datasetId) public onlyOwner(_datasetId) {
+        datasets[_datasetId].isAvailable = false;
         emit DatasetRemoved(_datasetId);
     }
 
-    function getDataset(uint256 _datasetId) public view returns (
+    function transferOwnership(uint256 _datasetId, address newOwner) public onlyOwner(_datasetId) {
+        require(newOwner != address(0), "Invalid new owner");
+        Dataset storage ds = datasets[_datasetId];
+        ds.previousOwners.push(ds.owner);
+        ds.transferTimestamps.push(block.timestamp);
+        address oldOwner = ds.owner;
+        ds.owner = newOwner;
+
+        // Transfer the master key encryption to the new owner's public key
+        // Note: In practice, this would require backend oracle intervention to re-encrypt the master key
+        ds.encryptedMasterKey = ""; // Placeholder: actual re-encryption should be done off-chain
+
+        emit OwnershipTransferred(_datasetId, oldOwner, newOwner, block.timestamp);
+    }
+
+    function getDatasetDetails(uint256 _datasetId) public view returns (
         address owner,
         string memory ipfsHash,
+        string memory metadata,
         uint256 price,
         bool isAvailable,
-        string memory metadata,
-        uint256 timestamp,
         uint256 accessCount,
-        string memory watermarkHash,
-        string memory reEncryptionKey,
-        bool isWatermarked,
-        bool isReEncrypted
+        bool hasPurchased,
+        string memory encryptedMasterKey,
+        string memory reEncryptionKey
     ) {
-        require(_datasetId > 0 && _datasetId <= datasetCounter, "Dataset does not exist");
-        Dataset storage dataset = datasets[_datasetId];
+        Dataset storage ds = datasets[_datasetId];
         return (
-            dataset.owner,
-            dataset.ipfsHash,
-            dataset.price,
-            dataset.isAvailable,
-            dataset.metadata,
-            dataset.timestamp,
-            dataset.accessCount,
-            dataset.watermarkHash,
-            dataset.reEncryptionKey,
-            dataset.isWatermarked,
-            dataset.isReEncrypted
+            ds.owner,
+            ds.ipfsHash,
+            ds.metadata,
+            ds.price,
+            ds.isAvailable,
+            ds.accessCount,
+            ds.hasPurchased[msg.sender],
+            ds.encryptedMasterKey,
+            ds.reEncryptionKey
         );
     }
 
-    function getDatasetCounter() public view returns (uint256) {
-        return datasetCounter;
+    function getOwnershipHistory(uint256 _datasetId) public view returns (address[] memory, uint256[] memory) {
+        Dataset storage ds = datasets[_datasetId];
+        return (ds.previousOwners, ds.transferTimestamps);
+    }
+
+    function getTransformedCapsule(uint256 _datasetId) public view returns (string memory) {
+        Dataset storage ds = datasets[_datasetId];
+        require(ds.hasPurchased[msg.sender], "Not purchased");
+        return ds.transformedCapsules[msg.sender];
+    }
+
+    function getEncryptedMasterKey(uint256 _datasetId) public view onlyOwner(_datasetId) returns (string memory) {
+        return datasets[_datasetId].encryptedMasterKey;
+    }
+
+    function isAuthorizedOracle(address _oracle) internal pure returns (bool) {
+        return _oracle == address(0x1234567890123456789012345678901234567890);
+    }
+
+    function hasAccess(uint256 _datasetId, address _user) public view returns (bool) {
+        return datasets[_datasetId].hasPurchased[_user];
     }
 }
