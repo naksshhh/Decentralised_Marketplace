@@ -29,11 +29,11 @@ A fully decentralized data marketplace powered by Ethereum, IPFS, and Proxy Re-E
 
 ## Prerequisites
 
-- Node.js ≥ 18 and npm
-- Ethereum development environment (Hardhat/Ganache/Remix)
-- MetaMask browser extension
-- Modern web browser (Chrome/Firefox)
-- IPFS Node or Web3.Storage
+* Node.js ≥ 18 and npm
+* Ethereum development environment (Hardhat/Ganache/Remix)
+* MetaMask browser extension
+* Modern web browser (Chrome/Firefox)
+* IPFS Node or Web3.Storage
 
 ## Installation
 
@@ -103,13 +103,20 @@ A fully decentralized data marketplace powered by Ethereum, IPFS, and Proxy Re-E
 - More advanced watermark verification (e.g., fingerprinting)
 
 
-## Contributing
+## References
+* https://github.com/swagatikasun/BD-Monetization
+* https://github.com/yjjnls/recrypt-js
+* Ethereum. (2016). EIP-191: Signed Data Standard. Ethereum Improvement Proposals. https:
+//eips.ethereum.org/EIPS/eip-191.
+* - Ocean: Decentralized Data market place 
+  - Acentrik : web3 data market place
+* Cox, I. J., Miller, M. L., Bloom, J. A., Fridrich, J., & Kalker, T. (2007). Digital watermarking
+and steganography. Morgan Kaufmann.
+* Johnson, D., Menezes, A., & Vanstone, S. (2001). The Elliptic Curve Digital Signature Algorithm
+(ECDSA). International Journal of Information Security, 1 (1), 36-63.
 
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+
+
 
 ## License
 
@@ -118,8 +125,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Contact
 
 For any questions or issues, please contact the project contributors.
-- Samsung Prism Team
-- Nakshatra Kanchan | Sriharshit Trupti | V Rana Bharath | Chirag Garg ~IIT PATNA
+- [ECODE Samsung: Prism Program](https://github.ecodesamsung.com/?team=Blockchain)
+- [Nakshatra Kanchan](https://github.com/Naksshhh) | Sriharshit Trupti | V Rana Bharath | Chirag Garg ~IIT PATNA
 - Prof. Raju Halder ~CSE Dept. , IIT Patna
 - Special thanks to Elliptic Curve Crypto, Proxy Re-Encryption pioneers, and the Web3 community.
 
