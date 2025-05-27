@@ -126,7 +126,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 For any questions or issues, please contact the project contributors.
 - [ECODE Samsung: Prism Program](https://github.ecodesamsung.com/?team=Blockchain)
-- [Nakshatra Kanchan](https://github.com/Naksshhh) | Sriharshit Trupti | V Rana Bharath | Chirag Garg ~IIT PATNA
+- [Nakshatra Kanchan](https://github.com/Naksshhh) | Sriharshith Trupti(https://github.com/Sriharshith1863) | V Rana Bharath(https://github.com/ranabharath) | Chirag Garg(https://github.com/chirag281) ~IIT PATNA
 - Prof. Raju Halder ~CSE Dept. , IIT Patna
 - Special thanks to Elliptic Curve Crypto, Proxy Re-Encryption pioneers, and the Web3 community.
 
