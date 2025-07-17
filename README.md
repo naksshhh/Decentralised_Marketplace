@@ -2,6 +2,9 @@
 
 A fully decentralized data marketplace powered by Ethereum, IPFS, and Proxy Re-Encryption. Designed for secure dataset sharing with verifiable ownership, privacy-preserving encryption, fine-grained access control, and watermarking.
 
+<img width="1600" height="793" alt="image" src="https://github.com/user-attachments/assets/0ad6d979-fea7-4732-9d12-8597047a619d" />
+
+
 ## Project Overview
 
 | Component              | Description                                         |
